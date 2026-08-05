@@ -1,7 +1,7 @@
 # rust-thanos
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Rust](https://github.com/wangzhizhou/rust-thanos/actions/workflows/ci.yml/badge.svg)](https://github.com/wangzhizhou/rust-thanos/actions/workflows/ci.yml)
+[![Rust](https://github.com/OrzMC/rust-thanos/actions/workflows/ci.yml/badge.svg)](https://github.com/OrzMC/rust-thanos/actions/workflows/ci.yml)
 
 一个高效的 Minecraft Java 世界优化工具，用于检测并删除未使用的区块，减少世界文件大小，提高游戏性能。
 
@@ -37,7 +37,7 @@ brew untap orzgeeker/core
 
 1. 克隆仓库并进入目录：
    ```bash
-   git clone https://github.com/wangzhizhou/rust-thanos.git
+   git clone https://github.com/OrzMC/rust-thanos.git
    cd rust-thanos
    ```
 
@@ -58,7 +58,7 @@ brew untap orzgeeker/core
 
 ### 下载预编译二进制文件
 
-预编译的二进制文件可在 [Releases](https://github.com/wangzhizhou/rust-thanos/releases) 页面下载。
+预编译的二进制文件可在 [Releases](https://github.com/OrzMC/rust-thanos/releases) 页面下载。
 
 ## 🚀 使用
 
@@ -202,8 +202,8 @@ cargo test
 
 ## 📞 联系方式
 
-- 项目链接：[https://github.com/wangzhizhou/rust-thanos](https://github.com/wangzhizhou/rust-thanos)
-- 报告问题：[Issues](https://github.com/wangzhizhou/rust-thanos/issues)
+- 项目链接：[https://github.com/OrzMC/rust-thanos](https://github.com/OrzMC/rust-thanos)
+- 报告问题：[Issues](https://github.com/OrzMC/rust-thanos/issues)
 
 ## 📚 相关链接
 
