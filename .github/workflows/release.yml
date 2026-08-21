@@ -16,176 +16,98 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build-macos-arm64:
-    runs-on: macos-latest
+  build:
+    name: build (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macOS：macos-latest 为 arm64 原生，x86_64 走交叉编译
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            exe: ""
+            archive_ext: tar.gz
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            exe: ""
+            archive_ext: tar.gz
+          # Linux：x86_64 原生，aarch64 走交叉编译（需要 gcc-aarch64-linux-gnu）
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            exe: ""
+            archive_ext: tar.gz
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            exe: ""
+            archive_ext: tar.gz
+          # Windows：x86_64 原生，aarch64 交叉编译（windows-latest 已预装 ARM64 MSVC 工具链）
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            exe: .exe
+            archive_ext: zip
+          - target: aarch64-pc-windows-msvc
+            os: windows-latest
+            exe: .exe
+            archive_ext: zip
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - name: Determine product name
-        id: product
-        run: |
-          echo "product_name=$(grep -E '^name\s*=\s*"' Cargo.toml | head -n1 | sed -E 's/.*"([^"]+)".*/\1/')" >> $GITHUB_OUTPUT
-      - name: Set up Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          toolchain: stable
-          components: clippy, rustfmt
-      - uses: Swatinem/rust-cache@v2
-      - name: Build (arm64)
-        run: |
-          rustup target add aarch64-apple-darwin
-          cargo build --release --locked --target aarch64-apple-darwin --message-format=json | tee build-aarch64.json
-      - name: Determine executables (arm64)
-        id: execs_arm64
-        run: |
-          execs=$(grep -E '"reason":"compiler-artifact"' build-aarch64.json | grep -E '"executable"' | sed -E 's/.*"executable":"([^"]+)".*/\1/' | xargs -n1 basename | tr '\n' ' ')
-          if [ -z "$execs" ]; then echo "No executable artifacts found for target aarch64-apple-darwin. Ensure binaries are built for this target." >&2; exit 1; fi
-          echo "execs=$execs" >> $GITHUB_OUTPUT
-      - name: Package (arm64)
-        run: |
-          mkdir -p dist
-          bin="target/aarch64-apple-darwin/release/${{ steps.product.outputs.product_name }}"
-          if [ ! -f "$bin" ]; then
-            echo "Expected binary not found: $bin" >&2
-            exit 1
-          fi
-          cp "$bin" "dist/${{ steps.product.outputs.product_name }}"
-          cp README.md LICENSE dist/ || true
-          tar -C dist -czf ${{ steps.product.outputs.product_name }}-${{ github.ref_name }}-aarch64-apple-darwin.tar.gz .
-      - name: Upload artifact (arm64)
-        uses: actions/upload-artifact@v4
-        with:
-          name: arm64-tarball
-          path: ${{ steps.product.outputs.product_name }}-${{ github.ref_name }}-aarch64-apple-darwin.tar.gz
 
-  build-macos-x64:
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
       - name: Determine product name
         id: product
+        shell: bash
         run: |
-          echo "product_name=$(grep -E '^name\s*=\s*"' Cargo.toml | head -n1 | sed -E 's/.*"([^"]+)".*/\1/')" >> $GITHUB_OUTPUT
-      - name: Set up Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          toolchain: stable
-          components: clippy, rustfmt
-      - uses: Swatinem/rust-cache@v2
-      - name: Build (x86_64)
-        run: |
-          rustup target add x86_64-apple-darwin
-          cargo build --release --locked --target x86_64-apple-darwin --message-format=json | tee build-x86_64.json
-      - name: Determine executables (x64)
-        id: execs_x64
-        run: |
-          execs=$(grep -E '"reason":"compiler-artifact"' build-x86_64.json | grep -E '"executable"' | sed -E 's/.*"executable":"([^"]+)".*/\1/' | xargs -n1 basename | tr '\n' ' ')
-          if [ -z "$execs" ]; then echo "No executable artifacts found for target x86_64-apple-darwin. Ensure binaries are built for this target." >&2; exit 1; fi
-          echo "execs=$execs" >> $GITHUB_OUTPUT
-      - name: Package (x86_64)
-        run: |
-          mkdir -p dist
-          bin="target/x86_64-apple-darwin/release/${{ steps.product.outputs.product_name }}"
-          if [ ! -f "$bin" ]; then
-            echo "Expected binary not found: $bin" >&2
-            exit 1
-          fi
-          cp "$bin" "dist/${{ steps.product.outputs.product_name }}"
-          cp README.md LICENSE dist/ || true
-          tar -C dist -czf ${{ steps.product.outputs.product_name }}-${{ github.ref_name }}-x86_64-apple-darwin.tar.gz .
-      - name: Upload artifact (x64)
-        uses: actions/upload-artifact@v4
-        with:
-          name: x64-tarball
-          path: ${{ steps.product.outputs.product_name }}-${{ github.ref_name }}-x86_64-apple-darwin.tar.gz
+          echo "product_name=$(grep -E '^name\s*=\s*"' Cargo.toml | head -n1 | sed -E 's/.*"([^"]+)".*/\1/')" >> "$GITHUB_OUTPUT"
 
-  build-linux-x64:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Determine product name
-        id: product
-        run: |
-          echo "product_name=$(grep -E '^name\s*=\s*"' Cargo.toml | head -n1 | sed -E 's/.*"([^"]+)".*/\1/')" >> $GITHUB_OUTPUT
       - name: Set up Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Build (linux x86_64)
-        run: |
-          cargo build --release --locked --message-format=json | tee build-linux-x64.json
-      - name: Determine executables (linux x86_64)
-        id: execs_linux
-        run: |
-          execs=$(grep -E '"reason":"compiler-artifact"' build-linux-x64.json | grep -E '"executable"' | sed -E 's/.*"executable":"([^\"]+)".*/\1/' | tr '\n' ' ')
-          if [ -z "$execs" ]; then echo "No executable artifacts found for Linux x86_64 build." >&2; exit 1; fi
-          echo "execs=$execs" >> $GITHUB_OUTPUT
-      - name: Package (linux x86_64)
-        run: |
-          mkdir -p dist
-          bin="target/release/${{ steps.product.outputs.product_name }}"
-          if [ ! -f "$bin" ]; then
-            bin="target/x86_64-unknown-linux-gnu/release/${{ steps.product.outputs.product_name }}"
-          fi
-          if [ ! -f "$bin" ]; then
-            echo "Expected binary not found for Linux x86_64: $bin" >&2
-            exit 1
-          fi
-          cp "$bin" "dist/${{ steps.product.outputs.product_name }}"
-          cp README.md LICENSE dist/ || true
-          tar -C dist -czf ${{ steps.product.outputs.product_name }}-${{ github.ref_name }}-x86_64-unknown-linux-gnu.tar.gz .
-      - name: Upload artifact (linux x64)
-        uses: actions/upload-artifact@v4
-        with:
-          name: linux-x64-tarball
-          path: ${{ steps.product.outputs.product_name }}-${{ github.ref_name }}-x86_64-unknown-linux-gnu.tar.gz
 
-  build-linux-arm64:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Determine product name
-        id: product
-        run: |
-          echo "product_name=$(grep -E '^name\s*=\s*"' Cargo.toml | head -n1 | sed -E 's/.*"([^"]+)".*/\1/')" >> $GITHUB_OUTPUT
-      - name: Set up Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          toolchain: stable
+      - name: Add Rust target
+        run: rustup target add "${{ matrix.target }}"
+
       - uses: Swatinem/rust-cache@v2
-      - name: Install aarch64 linker
+
+      - name: Install aarch64 Linux linker
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu
-      - name: Build (linux aarch64)
+
+      - name: Build
+        run: cargo build --release --locked --target "${{ matrix.target }}"
+
+      - name: Package
+        shell: bash
         run: |
-          rustup target add aarch64-unknown-linux-gnu
-          cargo build --release --locked --target aarch64-unknown-linux-gnu --message-format=json | tee build-linux-arm64.json
-      - name: Determine executables (linux aarch64)
-        id: execs_linux_arm64
-        run: |
-          execs=$(grep -E '"reason":"compiler-artifact"' build-linux-arm64.json | grep -E '"executable"' | sed -E 's/.*"executable":"([^\"]+)".*/\1/' | tr '\n' ' ')
-          if [ -z "$execs" ]; then echo "No executable artifacts found for Linux aarch64 build." >&2; exit 1; fi
-          echo "execs=$execs" >> $GITHUB_OUTPUT
-      - name: Package (linux aarch64)
-        run: |
-          mkdir -p dist
-          bin="target/aarch64-unknown-linux-gnu/release/${{ steps.product.outputs.product_name }}"
+          set -euo pipefail
+          name="${{ steps.product.outputs.product_name }}"
+          exe="${{ matrix.exe }}"
+          bin="target/${{ matrix.target }}/release/${name}${exe}"
           if [ ! -f "$bin" ]; then
-            echo "Expected binary not found for Linux aarch64: $bin" >&2
+            echo "Expected binary not found: $bin" >&2
             exit 1
           fi
-          cp "$bin" "dist/${{ steps.product.outputs.product_name }}"
-          cp README.md LICENSE dist/ || true
-          tar -C dist -czf ${{ steps.product.outputs.product_name }}-${{ github.ref_name }}-aarch64-unknown-linux-gnu.tar.gz .
-      - name: Upload artifact (linux arm64)
+          mkdir -p dist
+          cp "$bin" "dist/${name}${exe}"
+          cp README.md dist/ || true
+          if [ -f LICENSE ]; then cp LICENSE dist/; fi
+          archive="$name-${{ github.ref_name }}-${{ matrix.target }}.${{ matrix.archive_ext }}"
+          if [ "${{ matrix.archive_ext }}" = "zip" ]; then
+            powershell -NoProfile -Command "Compress-Archive -Path 'dist/*' -DestinationPath '$archive' -Force"
+          else
+            tar -C dist -czf "$archive" .
+          fi
+
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: linux-arm64-tarball
-          path: ${{ steps.product.outputs.product_name }}-${{ github.ref_name }}-aarch64-unknown-linux-gnu.tar.gz
+          name: tarball-${{ matrix.target }}
+          path: ${{ steps.product.outputs.product_name }}-${{ github.ref_name }}-${{ matrix.target }}.${{ matrix.archive_ext }}
 
   publish-release:
-    needs: [build-macos-arm64, build-macos-x64, build-linux-x64, build-linux-arm64]
+    needs: build
     runs-on: ubuntu-latest
     outputs:
       sha_arm64: ${{ steps.compute-sha.outputs.sha_arm64 }}
@@ -194,37 +116,36 @@ jobs:
       sha_linux_arm64: ${{ steps.compute-sha.outputs.sha_linux_arm64 }}
     steps:
       - uses: actions/checkout@v4
+
       - name: Determine product name
         id: product
         run: |
-          echo "product_name=$(grep -E '^name\s*=\s*"' Cargo.toml | head -n1 | sed -E 's/.*"([^"]+)".*/\1/')" >> $GITHUB_OUTPUT
-      - uses: actions/download-artifact@v4
+          echo "product_name=$(grep -E '^name\s*=\s*"' Cargo.toml | head -n1 | sed -E 's/.*"([^"]+)".*/\1/')" >> "$GITHUB_OUTPUT"
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
         with:
-          name: arm64-tarball
-      - uses: actions/download-artifact@v4
-        with:
-          name: x64-tarball
-      - uses: actions/download-artifact@v4
-        with:
-          name: linux-x64-tarball
-      - uses: actions/download-artifact@v4
-        with:
-          name: linux-arm64-tarball
+          pattern: tarball-*
+          merge-multiple: true
+          path: dist
+
       - name: Compute SHA256 values
         id: compute-sha
         run: |
-          echo "sha_arm64=$(sha256sum ${{ steps.product.outputs.product_name }}-${{ github.ref_name }}-aarch64-apple-darwin.tar.gz | cut -d ' ' -f1)" >> $GITHUB_OUTPUT
-          echo "sha_x64=$(sha256sum ${{ steps.product.outputs.product_name }}-${{ github.ref_name }}-x86_64-apple-darwin.tar.gz | cut -d ' ' -f1)" >> $GITHUB_OUTPUT
-          echo "sha_linux_x64=$(sha256sum ${{ steps.product.outputs.product_name }}-${{ github.ref_name }}-x86_64-unknown-linux-gnu.tar.gz | cut -d ' ' -f1)" >> $GITHUB_OUTPUT
-          echo "sha_linux_arm64=$(sha256sum ${{ steps.product.outputs.product_name }}-${{ github.ref_name }}-aarch64-unknown-linux-gnu.tar.gz | cut -d ' ' -f1)" >> $GITHUB_OUTPUT
+          name="${{ steps.product.outputs.product_name }}"
+          tag="${{ github.ref_name }}"
+          cd dist
+          {
+            echo "sha_arm64=$(sha256sum "$name-$tag-aarch64-apple-darwin.tar.gz" | cut -d ' ' -f1)"
+            echo "sha_x64=$(sha256sum "$name-$tag-x86_64-apple-darwin.tar.gz" | cut -d ' ' -f1)"
+            echo "sha_linux_x64=$(sha256sum "$name-$tag-x86_64-unknown-linux-gnu.tar.gz" | cut -d ' ' -f1)"
+            echo "sha_linux_arm64=$(sha256sum "$name-$tag-aarch64-unknown-linux-gnu.tar.gz" | cut -d ' ' -f1)"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v3
         with:
-          files: |
-            ${{ steps.product.outputs.product_name }}-${{ github.ref_name }}-aarch64-apple-darwin.tar.gz
-            ${{ steps.product.outputs.product_name }}-${{ github.ref_name }}-x86_64-apple-darwin.tar.gz
-            ${{ steps.product.outputs.product_name }}-${{ github.ref_name }}-x86_64-unknown-linux-gnu.tar.gz
-            ${{ steps.product.outputs.product_name }}-${{ github.ref_name }}-aarch64-unknown-linux-gnu.tar.gz
+          files: dist/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -246,14 +167,14 @@ jobs:
           cd main
           name=$(grep -E '^name\s*=\s*"' Cargo.toml | head -n1 | sed -E 's/.*"([^"]+)".*/\1/')
           desc=$(grep -E '^description\s*=\s*"' Cargo.toml | head -n1 | sed -E 's/.*"([^"]+)".*/\1/')
-          echo "product_name=$name" >> $GITHUB_OUTPUT
-          echo "product_desc=${desc:-$name}" >> $GITHUB_OUTPUT
+          echo "product_name=$name" >> "$GITHUB_OUTPUT"
+          echo "product_desc=${desc:-$name}" >> "$GITHUB_OUTPUT"
       - name: Build formula metadata
         id: formula
         run: |
           pname="${{ steps.product_main.outputs.product_name }}"
           class=$(echo "$pname" | awk -F'[-_]' '{for(i=1;i<=NF;i++){printf toupper(substr($i,1,1)) tolower(substr($i,2))}}')
-          echo "formula_class=$class" >> $GITHUB_OUTPUT
+          echo "formula_class=$class" >> "$GITHUB_OUTPUT"
       - name: Determine binary list (formula)
         id: bins
         run: |
@@ -265,14 +186,16 @@ jobs:
             | xargs -n1 basename \
             | tr '\n' ' ')
           if [ -z "$bins" ]; then echo "No executable artifacts found for formula generation. Ensure binaries build on Linux for Homebrew test." >&2; exit 1; fi
-          echo "bins=$bins" >> $GITHUB_OUTPUT
+          echo "bins=$bins" >> "$GITHUB_OUTPUT"
       - name: Prepare URLs
         id: prep
         run: |
-          echo "url_arm64=https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/${{ steps.product_main.outputs.product_name }}-${{ github.ref_name }}-aarch64-apple-darwin.tar.gz" >> $GITHUB_OUTPUT
-          echo "url_x64=https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/${{ steps.product_main.outputs.product_name }}-${{ github.ref_name }}-x86_64-apple-darwin.tar.gz" >> $GITHUB_OUTPUT
-          echo "url_linux_x64=https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/${{ steps.product_main.outputs.product_name }}-${{ github.ref_name }}-x86_64-unknown-linux-gnu.tar.gz" >> $GITHUB_OUTPUT
-          echo "url_linux_arm64=https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/${{ steps.product_main.outputs.product_name }}-${{ github.ref_name }}-aarch64-unknown-linux-gnu.tar.gz" >> $GITHUB_OUTPUT
+          {
+            echo "url_arm64=https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/${{ steps.product_main.outputs.product_name }}-${{ github.ref_name }}-aarch64-apple-darwin.tar.gz"
+            echo "url_x64=https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/${{ steps.product_main.outputs.product_name }}-${{ github.ref_name }}-x86_64-apple-darwin.tar.gz"
+            echo "url_linux_x64=https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/${{ steps.product_main.outputs.product_name }}-${{ github.ref_name }}-x86_64-unknown-linux-gnu.tar.gz"
+            echo "url_linux_arm64=https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/${{ steps.product_main.outputs.product_name }}-${{ github.ref_name }}-aarch64-unknown-linux-gnu.tar.gz"
+          } >> "$GITHUB_OUTPUT"
       - name: Verify Tap Repo variable
         id: tap
         run: |
@@ -280,7 +203,7 @@ jobs:
             echo "HOMEBREW_TAP_REPO secret is not set. Please add it in Repository Settings → Secrets and variables → Actions." >&2
             exit 1
           fi
-          echo "repo=${{ secrets.HOMEBREW_TAP_REPO }}" >> $GITHUB_OUTPUT
+          echo "repo=${{ secrets.HOMEBREW_TAP_REPO }}" >> "$GITHUB_OUTPUT"
       - name: Verify Tap Repo token
         run: |
           if [ -z "${{ secrets.HOMEBREW_TAP_REPO_TOKEN }}" ]; then

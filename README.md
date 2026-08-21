@@ -48,7 +48,13 @@ cargo install --path .         # 安装到系统（可选）
 
 ### 下载预编译二进制文件
 
-预编译二进制可在 [Releases](https://github.com/OrzMC/rust-thanos/releases) 页面下载。
+预编译二进制可在 [Releases](https://github.com/OrzMC/rust-thanos/releases) 页面下载，开箱即用（无需安装运行时）：
+
+| 平台 | 架构 | 产物格式 |
+| --- | --- | --- |
+| macOS | arm64 / x86_64 | `.tar.gz` |
+| Linux | arm64 / x86_64 | `.tar.gz` |
+| Windows | arm64 / x86_64 | `.zip` |
 
 ## 🚀 使用
 
@@ -305,10 +311,15 @@ cargo test
 
 ## 🖥️ 平台支持
 
-- **推荐**：Linux/macOS（x86_64 与 ARM64）。
-- **Windows**：建议用 WSL 获取更好的并发性能。
+提供独立二进制，覆盖 macOS / Linux / Windows，且同时支持 x86_64 与 ARM64：
 
-Homebrew 公式同时支持 macOS 与 Linux；发布流程为 macOS（arm64/x64）与 Linux（x64/arm64）生成压缩包与校验。
+- **macOS**：`.tar.gz`（arm64 / x86_64）
+- **Linux**：`.tar.gz`（arm64 / x86_64）
+- **Windows**：`.zip`（arm64 / x86_64），原生 MSVC 构建，无需额外运行库
+
+> 提示：Windows 下若需要最佳并发性能，仍可使用 WSL 运行 Linux 版本。
+
+Homebrew 公式支持 macOS 与 Linux；发布流程自动为 macOS（arm64/x64）、Linux（x64/arm64）与 Windows（arm64/x64）生成压缩包与校验。
 
 ## 📄 许可证
 
