@@ -16,7 +16,25 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Fail fast if the release tag doesn't match the Cargo.toml version, so the
+  # published binary's `--version` always agrees with the release tag.
+  validate-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Ensure tag matches Cargo.toml version
+        run: |
+          ver=$(grep -E '^version\s*=' Cargo.toml | head -n1 | sed -E 's/.*"([^"]+)".*/\1/')
+          tag="${{ github.ref_name }}"
+          if [ "$ver" != "$tag" ]; then
+            echo "Release tag '$tag' does not match Cargo.toml version '$ver'." >&2
+            echo "Bump Cargo.toml version to '$tag' and commit it, then push the tag." >&2
+            exit 1
+          fi
+          echo "OK: tag '$tag' matches Cargo.toml version '$ver'"
+
   build:
+    needs: validate-version
     name: build (${{ matrix.target }})
     strategy:
       fail-fast: false

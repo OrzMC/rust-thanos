@@ -1,6 +1,6 @@
 [package]
 name = "rust-thanos"
-version = "0.1.0"
+version = "0.0.3"
 edition = "2021"
 license = "MIT"
 description = "An efficient Minecraft Java world optimization tool to detect and remove unused chunks"
