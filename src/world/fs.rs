@@ -232,9 +232,12 @@ impl FileSystem for MemoryFS {
     }
     fn list(&self, path: &Path) -> io::Result<Vec<PathBuf>> {
         let nodes = self.nodes.lock().unwrap();
+        // Compare by `Path` components, not raw `os_str`: on Windows a key
+        // built from `create_dir_node` uses native `\` separators while the
+        // query path may keep `/`, and byte-wise comparison would miss it.
         let mut out: Vec<PathBuf> = nodes
             .keys()
-            .filter(|k| k.parent().map(|p| p.as_os_str()) == Some(path.as_os_str()))
+            .filter(|k| k.parent() == Some(path))
             .cloned()
             .collect();
         out.sort();
