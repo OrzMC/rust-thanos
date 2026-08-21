@@ -19,4 +19,10 @@ impl ChunkPattern for ListPattern {
             .iter()
             .any(|(x, z)| *x == entry.global_x() && *z == entry.global_z()))
     }
+
+    fn box_clone(&self) -> Box<dyn ChunkPattern> {
+        Box::new(Self {
+            coords: self.coords.clone(),
+        })
+    }
 }

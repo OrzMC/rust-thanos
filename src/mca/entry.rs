@@ -1,12 +1,12 @@
+use crate::mca::access::RandomAccess;
 use anyhow::{anyhow, Result};
 use byteorder::{ByteOrder, LittleEndian};
 use flate2::read::{GzDecoder, ZlibDecoder};
-use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::Read;
 use xxhash_rust::xxh32::xxh32;
 
 pub struct McaEntry {
-    file: File,
+    access: Box<dyn RandomAccess>,
     start: u64,
     _length: usize,
     index: u32,
@@ -26,11 +26,14 @@ pub enum CompressionMethod {
     ExternalZlib,
     ExternalRaw,
     ExternalLz4,
+    /// An unrecognized compression method byte. The chunk's raw bytes can still be
+    /// preserved, but it cannot be decompressed.
+    Unknown,
 }
 
 impl McaEntry {
     pub fn new(
-        file: File,
+        access: Box<dyn RandomAccess>,
         start: u64,
         length: usize,
         index: u32,
@@ -39,7 +42,7 @@ impl McaEntry {
         region_z: i32,
     ) -> Self {
         Self {
-            file,
+            access,
             start,
             _length: length,
             index,
@@ -68,10 +71,14 @@ impl McaEntry {
     }
 
     pub fn read_header(&mut self) -> Result<(u32, CompressionMethod, Option<String>)> {
-        self.file.seek(SeekFrom::Start(self.start))?;
+        self.access.seek(self.start)?;
         let mut buf = [0u8; 5];
-        self.file.read_exact(&mut buf)?;
+        self.access.read_exact(&mut buf)?;
         let len = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]);
+        // Guard against a corrupted length field that would make us read huge buffers.
+        if len > MAX_VALID_CHUNK_LENGTH {
+            return Err(anyhow!("chunk length {} exceeds limit", len));
+        }
         let method = buf[4] as i8;
         let cm = match method {
             1 => CompressionMethod::Gzip,
@@ -83,15 +90,18 @@ impl McaEntry {
             -126 => CompressionMethod::ExternalZlib,
             -125 => CompressionMethod::ExternalRaw,
             -124 => CompressionMethod::ExternalLz4,
-            _ => return Err(anyhow!("unknown compression")),
+            // Unknown method id: do not error here so the raw bytes can still be
+            // preserved. Decompression of an Unknown chunk fails (see
+            // `all_data_uncompressed`), which the engine treats as "safe keep".
+            _ => CompressionMethod::Unknown,
         };
         let mut custom = None;
         if cm == CompressionMethod::Custom {
             let mut lbuf = [0u8; 2];
-            self.file.read_exact(&mut lbuf)?;
+            self.access.read_exact(&mut lbuf)?;
             let n = u16::from_be_bytes(lbuf) as usize;
             let mut s = vec![0u8; n];
-            self.file.read_exact(&mut s)?;
+            self.access.read_exact(&mut s)?;
             custom = Some(String::from_utf8_lossy(&s).to_string());
         }
         Ok((len, cm, custom))
@@ -100,9 +110,9 @@ impl McaEntry {
     pub fn serialized_bytes(&mut self) -> Result<Vec<u8>> {
         let (len, _, _) = self.read_header()?;
         let total = 4u64 + len as u64;
-        self.file.seek(SeekFrom::Start(self.start))?;
-        let mut out = Vec::new();
-        std::io::Read::take(&mut self.file, total).read_to_end(&mut out)?;
+        self.access.seek(self.start)?;
+        let mut out = vec![0u8; total as usize];
+        self.access.read_exact(&mut out)?;
         Ok(out)
     }
 
@@ -111,10 +121,10 @@ impl McaEntry {
         let mut pos = self.start + 5;
         if cm == CompressionMethod::Custom {
             let mut lbuf = [0u8; 2];
-            self.file.read_exact(&mut lbuf)?;
+            self.access.read_exact(&mut lbuf)?;
             let n = u16::from_be_bytes(lbuf) as usize;
             let mut s = vec![0u8; n];
-            self.file.read_exact(&mut s)?;
+            self.access.read_exact(&mut s)?;
             pos += 2 + n as u64;
         }
         let data_len = len as usize
@@ -124,9 +134,9 @@ impl McaEntry {
             } else {
                 0
             };
-        self.file.seek(SeekFrom::Start(pos))?;
-        let mut data = Vec::new();
-        std::io::Read::take(&mut self.file, data_len as u64).read_to_end(&mut data)?;
+        self.access.seek(pos)?;
+        let mut data = vec![0u8; data_len];
+        self.access.read_exact(&mut data)?;
         Ok((cm, data, custom))
     }
 
@@ -135,18 +145,36 @@ impl McaEntry {
         match cm {
             CompressionMethod::Raw => Ok(data),
             CompressionMethod::Zlib => {
-                let mut d = ZlibDecoder::new(&data[..]);
+                let d = ZlibDecoder::new(&data[..]);
                 let mut out = Vec::new();
-                std::io::copy(&mut d, &mut out)?;
+                // Bound the decompressed output to avoid decompression bombs.
+                std::io::copy(
+                    &mut d.take(MAX_UNCOMPRESSED_CHUNK_LENGTH as u64 + 1),
+                    &mut out,
+                )?;
+                if out.len() > MAX_UNCOMPRESSED_CHUNK_LENGTH {
+                    return Err(anyhow!("zlib decompressed size exceeds limit"));
+                }
                 Ok(out)
             }
             CompressionMethod::Gzip => {
-                let mut d = GzDecoder::new(&data[..]);
+                let d = GzDecoder::new(&data[..]);
                 let mut out = Vec::new();
-                std::io::copy(&mut d, &mut out)?;
+                std::io::copy(
+                    &mut d.take(MAX_UNCOMPRESSED_CHUNK_LENGTH as u64 + 1),
+                    &mut out,
+                )?;
+                if out.len() > MAX_UNCOMPRESSED_CHUNK_LENGTH {
+                    return Err(anyhow!("gzip decompressed size exceeds limit"));
+                }
                 Ok(out)
             }
             CompressionMethod::Lz4 => decode_lz4_blocks(&data),
+            // Unknown compression cannot be decompressed; the engine treats the
+            // resulting error as "safe keep" (preserve the raw chunk).
+            CompressionMethod::Unknown => Err(anyhow!("unknown compression method")),
+            // Custom and External* chunks are not decompressible but their raw
+            // bytes are preserved; report empty data so callers can decide.
             _ => Ok(Vec::new()),
         }
     }
@@ -166,6 +194,15 @@ impl McaEntry {
 const LZ4_MAGIC: &[u8] = b"LZ4Block";
 const LZ4_HEADER_LEN: usize = 8 + 1 + 4 + 4 + 4;
 const LZ4_XXHASH_SEED: u32 = 0x9747b28c;
+
+/// Upper bound for a chunk's declared serialized length (the 4-byte BE field).
+/// Mirrors OrzMCBackup's `MAX_VALID_CHUNK_LENGTH` (8 MB).
+pub const MAX_VALID_CHUNK_LENGTH: u32 = 8 * 1024 * 1024;
+
+/// Upper bound for the total decompressed size of a chunk. Guards against
+/// decompression bombs. Mirrors OrzMCBackup's `MAX_UNCOMPRESSED_CHUNK_LENGTH`
+/// (64 MB).
+pub const MAX_UNCOMPRESSED_CHUNK_LENGTH: usize = 64 * 1024 * 1024;
 
 pub fn lz4_checksum(data: &[u8]) -> u32 {
     xxh32(data, LZ4_XXHASH_SEED) & 0x0FFFFFFF
@@ -188,6 +225,14 @@ pub fn decode_lz4_blocks(inp: &[u8]) -> Result<Vec<u8>> {
             return Err(anyhow!("LZ4 block truncated"));
         }
         let block = &inp[start..start + comp_len];
+        // Validate the declared decompressed length before allocating, to guard
+        // against decompression bombs.
+        if decomp_len > MAX_UNCOMPRESSED_CHUNK_LENGTH {
+            return Err(anyhow!(
+                "LZ4 decompressed length {} exceeds limit",
+                decomp_len
+            ));
+        }
         let decoded = if method == 0x10 {
             // RAW
             block.to_vec()
@@ -205,6 +250,9 @@ pub fn decode_lz4_blocks(inp: &[u8]) -> Result<Vec<u8>> {
         let checksum = lz4_checksum(&decoded);
         if checksum != checksum_le {
             return Err(anyhow!("LZ4 checksum mismatch"));
+        }
+        if out.len().saturating_add(decoded.len()) > MAX_UNCOMPRESSED_CHUNK_LENGTH {
+            return Err(anyhow!("LZ4 cumulative decompressed size exceeds limit"));
         }
         out.extend_from_slice(&decoded);
         i = start + comp_len;

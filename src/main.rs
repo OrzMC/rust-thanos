@@ -1,19 +1,12 @@
-use crate::world::ProgressMode;
 use anyhow::Result;
-use chrono::Local;
-use clap::Parser;
-use console::Term;
-use indicatif::{ProgressBar, ProgressStyle};
-use std::fs::File;
-use std::io::{Read, Write};
-use std::path::Path;
+use clap::{Parser, Subcommand};
+use rust_thanos::world::{
+    merge, optimize, MergeReportIO, MergeRequestBuilder, OptimizerRequestBuilder, ProgressMode,
+    ProgressSink, RangePattern, ReportFormat, ReportIO, TermProgressSink,
+};
+use std::io::Write;
 use std::path::PathBuf;
-use walkdir::WalkDir;
-use zip::write::FileOptions;
-
-mod mca;
-mod patterns;
-mod world;
+use std::sync::Arc;
 
 #[derive(Parser)]
 #[command(
@@ -21,9 +14,23 @@ mod world;
     version,
     about = "Optimize Minecraft Java worlds",
     long_about = "Scan MCA region files and remove unused chunks. Keep chunks by InhabitedTime threshold and force-loaded tickets. Supports RAW/ZLIB/GZIP/LZ4. Recursively detects dimension directories. Friendly progress display. Optional zip archive of OUTPUT_DIR.",
-    after_help = "Examples:\n  rust-thanos /world /out\n  rust-thanos /world /out -t 600\n  rust-thanos /world /out --remove-unknown --progress-mode global\n  rust-thanos /world --in-place\n  rust-thanos /world /out --zip-output\n  rust-thanos /world /out -f\n\nNotes:\n  • InhabitedTime threshold unit: seconds (1s = 20 ticks).\n  • Non in-place mode requires OUTPUT_DIR to be empty; if it exists and is not empty, you will be prompted. Use -f/--force to overwrite without prompt.\n  • If OUTPUT_DIR is omitted, a temporary directory is used and replaces the input directory.\n  • On Windows, WSL is recommended for better performance."
+    after_help = "Examples:\n  rust-thanos backup /world /out\n  rust-thanos backup /world /out -t 600\n  rust-thanos backup /world /out --remove-unknown --progress-mode global\n  rust-thanos backup /world --in-place\n  rust-thanos backup /world /out --zip-output\n  rust-thanos backup /world /out -f\n  rust-thanos merge BASE PATCH OUTPUT\n\nNotes:\n  • InhabitedTime threshold unit: seconds (1s = 20 ticks).\n  • Non in-place mode requires OUTPUT_DIR to be empty; if it exists and is not empty, you will be prompted. Use -f/--force to overwrite without prompt.\n  • If OUTPUT_DIR is omitted, a temporary directory is used and replaces the input directory.\n  • On Windows, WSL is recommended for better performance."
 )]
-struct Args {
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Optimize a world by removing unused chunks (default workflow).
+    Backup(BackupArgs),
+    /// Merge a backup patch back into a world (restore). Phase 4.
+    Merge(MergeArgs),
+}
+
+#[derive(clap::Args)]
+struct BackupArgs {
     #[arg(value_name = "WORLD_DIR", help = "Minecraft world root")]
     input: PathBuf,
     #[arg(
@@ -65,15 +72,131 @@ struct Args {
         help = "Force overwrite OUTPUT_DIR if it exists (no prompt)"
     )]
     force: bool,
+    #[arg(long, default_value_t = 0, help = "Region parallelism (0 = auto)")]
+    parallelism: usize,
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Skip fsync on region finalize (faster, less durable)"
+    )]
+    no_fsync: bool,
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Exit non-zero when any error was recorded (Phase 3)"
+    )]
+    strict: bool,
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Dry-run: analyze without writing any output (zero bytes)"
+    )]
+    dry_run: bool,
+    #[arg(
+        long,
+        default_value_t = true,
+        help = "Copy non-MCA files (level.dat, players/, data/, ...) to the output"
+    )]
+    copy_misc: bool,
+    #[arg(long, help = "Disable copying non-MCA files to the output")]
+    no_copy_misc: bool,
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Print a plain-text report to stdout after the run"
+    )]
+    report: bool,
+    #[arg(
+        long,
+        value_name = "FILE",
+        help = "Write the report to a file (JSON/CSV)"
+    )]
+    report_file: Option<PathBuf>,
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = ReportFormat::Json,
+        help = "Report file format: json | csv | text"
+    )]
+    report_format: ReportFormat,
+    #[arg(
+        long,
+        default_value_t = 1000,
+        help = "Emit a progress update every N chunks"
+    )]
+    progress_interval: u64,
+    #[arg(
+        long,
+        default_value_t = 0,
+        help = "Emit a progress update every N milliseconds (0 = count-based)"
+    )]
+    progress_interval_ms: u64,
+    #[arg(
+        long,
+        num_args = 4,
+        value_names = ["X1", "Z1", "X2", "Z2"],
+        help = "Keep chunks inside the rectangle [X1,Z1] x [X2,Z2] (inclusive)"
+    )]
+    keep_range: Option<Vec<i32>>,
+}
+
+#[derive(clap::Args)]
+struct MergeArgs {
+    /// Original (pre-optimization) world.
+    base: PathBuf,
+    /// Backup/optimized world to merge back in.
+    patch: PathBuf,
+    /// Destination world directory.
+    output: PathBuf,
+    #[arg(short = 'f', long, help = "Overwrite a non-empty OUTPUT")]
+    force: bool,
+    #[arg(long, value_enum, default_value_t = ProgressMode::Off, help = "Progress display: off | global | region")]
+    progress_mode: ProgressMode,
+    #[arg(long, default_value_t = 0, help = "Region parallelism (0 = auto)")]
+    parallelism: usize,
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Skip fsync on region finalize (faster, less durable)"
+    )]
+    no_fsync: bool,
+    #[arg(
+        long,
+        default_value_t = 1000,
+        help = "Emit a progress update every N files"
+    )]
+    progress_interval: u64,
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Print a plain-text report to stdout after the run"
+    )]
+    report: bool,
+    #[arg(
+        long,
+        value_name = "FILE",
+        help = "Write the report to a file (JSON/CSV)"
+    )]
+    report_file: Option<PathBuf>,
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = ReportFormat::Json,
+        help = "Report file format: json | csv | text"
+    )]
+    report_format: ReportFormat,
 }
 
 fn main() -> Result<()> {
     env_logger::init();
-    let args = Args::parse();
-    let ticks = args
-        .inhabited_time_seconds
-        .checked_mul(20)
-        .ok_or_else(|| anyhow::anyhow!("inhabited threshold seconds overflow"))?;
+    let cli = Cli::parse();
+    match cli.command {
+        Commands::Backup(args) => cmd_backup(args),
+        Commands::Merge(args) => cmd_merge(args),
+    }
+}
+
+fn cmd_backup(args: BackupArgs) -> Result<()> {
     if !args.in_place {
         if let Some(ref out_dir) = args.output {
             if out_dir.exists() {
@@ -102,75 +225,70 @@ fn main() -> Result<()> {
     } else {
         args.output.clone()
     };
-    world::run(
-        args.input,
-        dest,
-        ticks,
-        args.remove_unknown,
-        args.progress_mode,
-    )?;
-    if !args.in_place {
-        if let Some(ref out_dir) = args.output {
-            if args.zip_output {
-                let ts = Local::now().format("%Y%m%d%H%M%S").to_string();
-                let parent = out_dir.parent().unwrap_or(Path::new("."));
-                let zip_path = parent.join(format!("{}.zip", ts));
-                println!("开始压缩: {} → {}", out_dir.display(), zip_path.display());
-                zip_dir(out_dir, &zip_path)?;
-                println!("zip: {}", zip_path.display());
-                std::fs::remove_dir_all(out_dir)?;
-            }
+    let sink: Arc<dyn ProgressSink> = Arc::new(TermProgressSink::new(args.progress_mode));
+    let mut builder = OptimizerRequestBuilder::new(args.input)
+        .output(dest)
+        .inhabited_threshold_seconds(args.inhabited_time_seconds)
+        .remove_unknown(args.remove_unknown)
+        .progress_mode(args.progress_mode)
+        .in_place(args.in_place)
+        .force(args.force)
+        .parallelism(args.parallelism)
+        .sync_on_finalize(!args.no_fsync)
+        .strict(args.strict)
+        .dry_run(args.dry_run)
+        .copy_misc(args.copy_misc && !args.no_copy_misc)
+        .zip_output(args.zip_output)
+        .progress_sink(sink)
+        .progress_interval(args.progress_interval)
+        .progress_interval_ms(args.progress_interval_ms);
+    if let Some(v) = &args.keep_range {
+        builder = builder.pattern(Box::new(RangePattern::new(v[0], v[1], v[2], v[3])));
+    }
+    let request = builder.build();
+    let report = optimize(&request)?;
+
+    if args.report {
+        println!("\n{}", ReportIO::to_text(&report));
+    }
+    if let Some(path) = &args.report_file {
+        if let Err(e) = ReportIO::write(&report, path, args.report_format) {
+            eprintln!("failed to write report: {}", e);
         }
     }
+
+    if args.strict && !report.errors.is_empty() {
+        eprintln!("{} 个错误，strict 模式退出码 1", report.errors.len());
+        std::process::exit(1);
+    }
+
     Ok(())
 }
 
-fn zip_dir(src_dir: &Path, dst_zip: &Path) -> Result<()> {
-    let file = File::create(dst_zip)?;
-    let mut zip = zip::ZipWriter::new(file);
-    let options = FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
-    let total_files: u64 = WalkDir::new(src_dir)
-        .into_iter()
-        .filter_map(|e| e.ok())
-        .filter(|e| e.path().is_file())
-        .count() as u64;
-    let pb = ProgressBar::new(total_files.max(1));
-    let term = Term::stdout();
-    let (_, cols) = term.size();
-    let reserve = 30u16;
-    let mut bar_width = if cols > reserve {
-        (cols - reserve) as usize
-    } else {
-        20usize
-    };
-    bar_width = bar_width.min(50);
-    let style = ProgressStyle::with_template(&format!(
-        "{{spinner:.green}} {{bar:{width}.cyan/blue}} {{pos}}/{{len}} 文件 {{percent}}% {{msg}}",
-        width = bar_width
-    ))
-    .unwrap()
-    .progress_chars("=>-");
-    pb.set_style(style);
-    for entry in WalkDir::new(src_dir).into_iter().filter_map(|e| e.ok()) {
-        let path = entry.path();
-        let name = path.strip_prefix(src_dir).unwrap();
-        if name.as_os_str().is_empty() {
-            continue;
-        }
-        if path.is_file() {
-            pb.set_message(name.to_string_lossy().to_string());
-            zip.start_file(name.to_string_lossy(), options)?;
-            let mut f = std::fs::File::open(path)?;
-            let mut buf = Vec::new();
-            f.read_to_end(&mut buf)?;
-            zip.write_all(&buf)?;
-            pb.inc(1);
-        } else {
-            let dir_name = format!("{}/", name.to_string_lossy());
-            zip.add_directory(dir_name, options)?;
+fn cmd_merge(args: MergeArgs) -> Result<()> {
+    let sink: Arc<dyn ProgressSink> = Arc::new(TermProgressSink::new(args.progress_mode));
+    let request = MergeRequestBuilder::new(args.base, args.patch, args.output)
+        .force(args.force)
+        .progress_mode(args.progress_mode)
+        .progress_sink(sink)
+        .progress_interval(args.progress_interval)
+        .parallelism(args.parallelism)
+        .sync_on_finalize(!args.no_fsync)
+        .build();
+    let report = merge(&request)?;
+
+    if args.report {
+        println!("\n{}", MergeReportIO::to_text(&report));
+    }
+    if let Some(path) = &args.report_file {
+        if let Err(e) = MergeReportIO::write(&report, path, args.report_format) {
+            eprintln!("failed to write report: {}", e);
         }
     }
-    zip.finish()?;
-    pb.finish_with_message("压缩完成");
+
+    if !report.errors.is_empty() {
+        eprintln!("{} 个错误，merge 退出码 1", report.errors.len());
+        std::process::exit(1);
+    }
     Ok(())
 }

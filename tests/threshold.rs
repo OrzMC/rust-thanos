@@ -1,110 +1,27 @@
-use rust_thanos::mca::entry::McaEntry;
 use rust_thanos::mca::reader::McaReader;
-use rust_thanos::mca::writer::McaWriter;
 use rust_thanos::world::ProgressMode;
 use std::fs;
-use std::path::Path;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-fn build_inhabited_entry_file(path: &PathBuf, inhabited: i64) {
-    let mut data = Vec::new();
-    // Long tag (type=4), name length=14, name="InhabitedTime", value (BE i64)
-    data.extend_from_slice(b"\x04\x00\x0eInhabitedTime");
-    data.extend_from_slice(&inhabited.to_be_bytes());
-    let len = (1 + data.len()) as u32; // header length includes method byte
-    let mut header = Vec::new();
-    header.extend_from_slice(&len.to_be_bytes());
-    header.push(3); // RAW
-    header.extend_from_slice(&data);
-    fs::write(path, header).unwrap();
+/// The threshold tests run against the REAL fixture chunks
+/// (`tests/Fixtures/world/region/r.0.0.mca`, copied from OrzMCBackup's test
+/// fixtures). That region has 676 chunks whose InhabitedTime values are spread
+/// over 0..=40, so exact keep/remove counts are asserted instead of
+/// hand-crafted synthetic NBT.
+const FIXTURE_REGION: &str = "tests/Fixtures/world/region/r.0.0.mca";
+
+/// Copies the real region into a fresh temp world that has ONLY a `region/`
+/// dir (no `data/chunks.dat`), so force-loaded chunks can never affect the
+/// threshold counts.
+fn region_only_world(base: &Path) -> PathBuf {
+    let world = base.join("world");
+    fs::create_dir_all(world.join("region")).unwrap();
+    fs::copy(FIXTURE_REGION, world.join("region").join("r.0.0.mca")).unwrap();
+    world
 }
 
-fn create_input_region_with_one_chunk(dir: &Path, inhabited: i64) -> PathBuf {
-    let entry_src = dir.join("chunk-src.bin");
-    build_inhabited_entry_file(&entry_src, inhabited);
-    let entry_file = std::fs::File::open(&entry_src).unwrap();
-    let mut entry = McaEntry::new(
-        entry_file,
-        0,
-        fs::metadata(&entry_src).unwrap().len() as usize,
-        0,
-        0,
-        0,
-        0,
-    );
-    let input_region = dir.join("region");
-    fs::create_dir_all(&input_region).unwrap();
-    let input_mca = input_region.join("r.0.0.mca");
-    let mut writer = McaWriter::open(input_mca.to_string_lossy().as_ref()).unwrap();
-    writer.write_entry(&mut entry).unwrap();
-    writer.finalize().unwrap();
-    input_mca
-}
-
-#[test]
-fn threshold_keeps_and_removes() {
-    let base = std::env::temp_dir().join(format!("rt-threshold-{}", uuid::Uuid::new_v4()));
-    fs::create_dir_all(&base).unwrap();
-    let input_mca = create_input_region_with_one_chunk(&base, 42);
-
-    // run with threshold below 42 (e.g., 10 ticks): expect chunk kept
-    let out1 = base.join("out1");
-    rust_thanos::world::run(
-        base.clone(),
-        Some(out1.clone()),
-        10,
-        false,
-        ProgressMode::Off,
-    )
-    .unwrap();
-    let mut r1 = McaReader::open(
-        out1.join("region")
-            .join(input_mca.file_name().unwrap())
-            .to_string_lossy()
-            .as_ref(),
-    )
-    .unwrap();
-    let kept1 = r1.entries().unwrap().len();
-    assert!(kept1 > 0);
-
-    // run with threshold above 42 (e.g., 100 ticks): expect chunk removed
-    let base2 = std::env::temp_dir().join(format!("rt-threshold-{}", uuid::Uuid::new_v4()));
-    fs::create_dir_all(&base2).unwrap();
-    let _ = create_input_region_with_one_chunk(&base2, 42);
-    let out2 = base2.join("out2");
-    rust_thanos::world::run(
-        base2.clone(),
-        Some(out2.clone()),
-        100,
-        true,
-        ProgressMode::Off,
-    )
-    .unwrap();
-    let mut r2 = McaReader::open(
-        out2.join("region")
-            .join("r.0.0.mca")
-            .to_string_lossy()
-            .as_ref(),
-    )
-    .unwrap();
-    let kept2 = r2.entries().unwrap().len();
-    assert_eq!(kept2, 0);
-}
-
-#[test]
-fn threshold_equal_is_kept() {
-    let base = std::env::temp_dir().join(format!("rt-threshold-eq-{}", uuid::Uuid::new_v4()));
-    fs::create_dir_all(&base).unwrap();
-    let _ = create_input_region_with_one_chunk(&base, 42);
-    let out = base.join("out");
-    rust_thanos::world::run(
-        base.clone(),
-        Some(out.clone()),
-        42,
-        false,
-        ProgressMode::Off,
-    )
-    .unwrap();
+/// Opens the output region and returns its sorted chunk region-indices.
+fn output_indices(out: &Path) -> Vec<u32> {
     let mut r = McaReader::open(
         out.join("region")
             .join("r.0.0.mca")
@@ -112,6 +29,95 @@ fn threshold_equal_is_kept() {
             .as_ref(),
     )
     .unwrap();
-    let kept = r.entries().unwrap().len();
-    assert!(kept > 0);
+    let mut v: Vec<u32> = r
+        .entries()
+        .unwrap()
+        .iter_mut()
+        .map(|e| e.region_index())
+        .collect();
+    v.sort_unstable();
+    v
+}
+
+/// Exact keep-counts for the real fixture region at each threshold (ticks),
+/// verified against the raw NBT of every chunk:
+///   >0 → 58, >10 → 39, >20 → 15, >27 → 8, >30 → 2, >40 → 0
+#[test]
+fn real_fixture_threshold_counts() {
+    let cases = [(0, 58), (10, 39), (20, 15), (27, 8), (30, 2), (40, 0)];
+    for (threshold, expected) in cases {
+        let base =
+            std::env::temp_dir().join(format!("rt-thr-{}-{}", threshold, uuid::Uuid::new_v4()));
+        fs::create_dir_all(&base).unwrap();
+        let world = region_only_world(&base);
+        let out = base.join("out");
+        rust_thanos::world::run(
+            world,
+            Some(out.clone()),
+            threshold,
+            false,
+            ProgressMode::Off,
+        )
+        .unwrap();
+        if expected == 0 {
+            // Strictly nothing kept: the lazy writer creates no region file.
+            assert!(
+                !out.join("region").join("r.0.0.mca").exists(),
+                "threshold {} should produce no output region",
+                threshold
+            );
+        } else {
+            assert_eq!(
+                output_indices(&out).len(),
+                expected,
+                "kept count at threshold {}",
+                threshold
+            );
+        }
+    }
+}
+
+/// Strict-`>` boundary on real data. Chunks with InhabitedTime == 27 exist
+/// (region-indices 0, 1, 2). At threshold 27 they must be REMOVED: with the old
+/// `>=` semantics they would be kept (11 kept, not 8).
+#[test]
+fn real_fixture_strict_greater_boundary() {
+    let base = std::env::temp_dir().join(format!("rt-boundary-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(&base).unwrap();
+    let world = region_only_world(&base);
+
+    let out26 = base.join("out26");
+    rust_thanos::world::run(
+        world.clone(),
+        Some(out26.clone()),
+        26,
+        false,
+        ProgressMode::Off,
+    )
+    .unwrap();
+    let kept26 = output_indices(&out26);
+    assert_eq!(kept26.len(), 11, ">26 keeps the three 27-value chunks");
+
+    let out27 = base.join("out27");
+    rust_thanos::world::run(
+        world.clone(),
+        Some(out27.clone()),
+        27,
+        false,
+        ProgressMode::Off,
+    )
+    .unwrap();
+    let kept27 = output_indices(&out27);
+    assert_eq!(
+        kept27.len(),
+        8,
+        "strict >27 must drop the three 27-value chunks"
+    );
+    for idx in [0u32, 1, 2] {
+        assert!(
+            !kept27.contains(&idx),
+            "chunk {} (InhabitedTime == 27) must be removed at threshold 27",
+            idx
+        );
+    }
 }

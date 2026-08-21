@@ -1,50 +1,65 @@
+use crate::mca::access::{FileAccess, MemoryAccess, RandomAccess};
 use crate::mca::entry::McaEntry;
 use anyhow::{anyhow, Result};
 use regex::Regex;
-use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
 
+/// Reads Minecraft Anvil region files (.mca).
+///
+/// The underlying data is accessed through [`RandomAccess`], so the same reader
+/// works on the real filesystem (`File`) or in-memory buffers (`MemoryAccess`).
+/// Mirrors OrzMCBackup's `McaReader`.
 pub struct McaReader {
-    file: File,
+    access: Box<dyn RandomAccess>,
     x_pos: i32,
     z_pos: i32,
-    offsets: Option<Vec<u32>>,
-    sizes: Option<Vec<u32>>,
+    offsets: Option<Vec<u64>>,
+    sizes: Option<Vec<u64>>,
     timestamps: Option<Vec<u32>>,
 }
 
 impl McaReader {
+    /// Open a region file from disk. The filename must match `r.x.z.mca`.
     pub fn open(path: &str) -> Result<Self> {
-        let re = Regex::new(r#"r\.(-?\d+)\.(-?\d+)\.mca$"#)?;
-        let caps = re
-            .captures(path)
-            .ok_or_else(|| anyhow!("invalid mca filename"))?;
-        let x_pos: i32 = caps.get(1).unwrap().as_str().parse()?;
-        let z_pos: i32 = caps.get(2).unwrap().as_str().parse()?;
-        let file = File::open(path)?;
-        Ok(Self {
-            file,
+        let (x, z) = parse_coords(path)?;
+        let access: Box<dyn RandomAccess> = Box::new(FileAccess::open(path)?);
+        Ok(Self::new(access, x, z))
+    }
+
+    /// Open a region file from in-memory bytes. Useful for testing and for the
+    /// `MemoryMcaIOFactory`. Mirrors OrzMCBackup `McaReader.openFromBytes`.
+    pub fn open_from_bytes(path: &str, bytes: Vec<u8>) -> Result<Self> {
+        let (x, z) = parse_coords(path)?;
+        let access: Box<dyn RandomAccess> = Box::new(MemoryAccess::new(bytes));
+        Ok(Self::new(access, x, z))
+    }
+
+    /// Build a reader over an injected access handle with explicit coordinates.
+    pub fn new(access: Box<dyn RandomAccess>, x_pos: i32, z_pos: i32) -> Self {
+        Self {
+            access,
             x_pos,
             z_pos,
             offsets: None,
             sizes: None,
             timestamps: None,
-        })
+        }
     }
 
     fn read_header(&mut self) -> Result<()> {
-        self.file.seek(SeekFrom::Start(0))?;
+        self.access.seek(0)?;
         let mut loc = vec![0u8; 4096];
-        self.file.read_exact(&mut loc)?;
+        self.access.read_exact(&mut loc)?;
         let mut time = vec![0u8; 4096];
-        self.file.read_exact(&mut time)?;
+        self.access.read_exact(&mut time)?;
         let mut offsets = Vec::with_capacity(1024);
         let mut sizes = Vec::with_capacity(1024);
         for i in 0..1024 {
             let base = i * 4;
             let v = u32::from_be_bytes([loc[base], loc[base + 1], loc[base + 2], loc[base + 3]]);
-            let off = (v >> 8) * 4096;
-            let size = (v & 0xFF) * 4096;
+            // Compute in u64: a corrupt location entry can push (v>>8)*4096 past
+            // u32::MAX (e.g. all-0xFF header), which used to overflow here.
+            let off = ((v >> 8) as u64) * 4096;
+            let size = ((v & 0xFF) as u64) * 4096;
             offsets.push(off);
             sizes.push(size);
         }
@@ -91,8 +106,8 @@ impl McaReader {
                 continue;
             }
             out.push(McaEntry::new(
-                self.file.try_clone()?,
-                off as u64,
+                self.access.try_clone()?,
+                off,
                 size as usize,
                 i as u32,
                 ts,
@@ -101,6 +116,16 @@ impl McaReader {
             ));
         }
         Ok(out)
+    }
+
+    /// Count used chunk slots without allocating entries.
+    pub fn count(&mut self) -> Result<usize> {
+        self.ensure()?;
+        let offsets = self.offsets.as_ref().unwrap();
+        let sizes = self.sizes.as_ref().unwrap();
+        Ok((0..1024)
+            .filter(|&i| offsets[i] != 0 && sizes[i] != 0)
+            .count())
     }
 
     pub fn get(&mut self, index: usize) -> Result<Option<McaEntry>> {
@@ -115,8 +140,8 @@ impl McaReader {
             return Ok(None);
         }
         Ok(Some(McaEntry::new(
-            self.file.try_clone()?,
-            off as u64,
+            self.access.try_clone()?,
+            off,
             size as usize,
             index as u32,
             ts,
@@ -124,4 +149,21 @@ impl McaReader {
             self.z_pos,
         )))
     }
+
+    /// Get the entry for the chunk at world coordinates `(x, z)`, or `None`
+    /// when that region slot is empty. Mirrors thanos `McaReader::getChunkAt`.
+    pub fn get_chunk_at(&mut self, x: i32, z: i32) -> Result<Option<McaEntry>> {
+        let index = x.rem_euclid(32) as usize + z.rem_euclid(32) as usize * 32;
+        self.get(index)
+    }
+}
+
+fn parse_coords(path: &str) -> Result<(i32, i32)> {
+    let re = Regex::new(r#"r\.(-?\d+)\.(-?\d+)\.mca$"#)?;
+    let caps = re
+        .captures(path)
+        .ok_or_else(|| anyhow!("invalid mca filename"))?;
+    let x_pos: i32 = caps.get(1).unwrap().as_str().parse()?;
+    let z_pos: i32 = caps.get(2).unwrap().as_str().parse()?;
+    Ok((x_pos, z_pos))
 }

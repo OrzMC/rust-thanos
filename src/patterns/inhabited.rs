@@ -51,8 +51,17 @@ impl ChunkPattern for InhabitedTimePattern {
             return Ok(!self.remove_unknown);
         }
         if let Some(t) = find_inhabited_fast(&de) {
-            return Ok(t >= self.threshold);
+            // Strictly greater: a chunk whose InhabitedTime equals the threshold is removed.
+            // Matches Aternos/Thanos (InhabitedTimePattern.php) and OrzMCBackup semantics.
+            return Ok(t > self.threshold);
         }
         Ok(!self.remove_unknown)
+    }
+
+    fn box_clone(&self) -> Box<dyn ChunkPattern> {
+        Box::new(Self {
+            threshold: self.threshold,
+            remove_unknown: self.remove_unknown,
+        })
     }
 }
