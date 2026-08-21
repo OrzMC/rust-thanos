@@ -30,13 +30,13 @@ Three layers:
    - `fs.rs`: the `FileSystem` trait — the engine never touches `std::fs` directly. `RealFileSystem` (production) / `MemoryFS` (in-memory tree for tests; paths use `/`).
    - `io_factory.rs`: `McaIOFactory` produces reader/writer pairs. `DefaultMcaIOFactory` → disk; `MemoryMcaIOFactory` → `MemoryFS` (writers accumulate and flush at finalize).
    - `optimizer.rs`: `OptimizerRequest` (flat config via `OptimizerRequestBuilder`), `OptimizerEngine` trait, stateless `DefaultOptimizer`, `optimize()` free function. Pipeline: `discover_dimensions` → `count_total_chunks` → `process_dimension` (regions parallel via rayon) → `handle_in_place`. All non-fatal errors route through a shared `Shared` into `OptimizeReport.errors`.
-   - `merger.rs`: `MergeRequest`/`MergeRequestBuilder`, `MergeEngine`/`DefaultMerger`, `merge()`. Overlap guard → copyTree (base full copy, skipping regions patch also has) → overlayPatch (per-slot patch-wins, entities/poi in lockstep).
-   - Supporting: `forceload.rs` (`data/minecraft/chunk_tickets.dat` for 1.21.6+/26.1+, falling back to `data/chunks.dat`), `misc.rs` (copy non-MCA files), `output.rs` (overlap guard), `zip.rs` (timestamped archive), `progress.rs` (`ProgressSink` event model), `report.rs` (`OptimizeReport`, `ReportSink`, `MetricsSink`, `ErrorHook`).
+   - `merger.rs`: `MergeRequest`/`MergeRequestBuilder`, `MergeEngine`/`DefaultMerger`, `merge()`. Overlap guard → copyTree (base full copy, skipping regions patch also has) → overlayPatch (per-slot patch-wins, entities/poi in lockstep). Note: unlike backup, merge does **not** auto-resolve `parallelism = 0` — regions run in parallel only when `parallelism > 1` (else serial).
+   - Supporting: `forceload.rs` (probes `data/minecraft/chunk_tickets.dat` for 1.21.6+/26.1+, then `data/chunks.dat` — **first existing file wins, never combined**; both NBT structures inside the chosen file are unioned), `misc.rs` (copy non-MCA files), `output.rs` (overlap guard), `zip.rs` (timestamped archive), `progress.rs` (`ProgressSink` event model), `report.rs` (`OptimizeReport`, `ReportSink`, `MetricsSink`, `ErrorHook`).
 
 Key invariants to preserve when editing the engine:
 - **All I/O through traits.** Any new I/O must go through `FileSystem` + `McaIOFactory`, never `std::fs`/`File` directly — that is what keeps the pipeline testable in-memory.
 - **Determinism under parallelism.** Region-level parallelism must produce byte-identical output at any `--parallelism`; each region finalizes independently. Tests pin this (merge parallelism tests in `tests/phase4.rs`).
-- **Safety-first errors.** Unparseable/corrupt chunks are KEPT unless `--remove-unknown`; per-chunk failures are recorded (non-fatal) and only `--strict` changes the exit code.
+- **Safety-first errors.** Unparseable/corrupt chunks are KEPT — `--remove-unknown` only drops external-compressed / empty-data / missing-InhabitedTime-tag chunks, never truly-unknown compression (its uncompress call errors, which the pattern propagates and the engine safe-keeps). Per-chunk failures are recorded (non-fatal) and only `--strict` changes the exit code.
 - **Seconds vs ticks.** CLI threshold is seconds; `OptimizerRequestBuilder::inhabited_threshold_seconds` converts ×20 to ticks. `world::run` (legacy, used by some tests) takes ticks directly and pins the strict-`>` boundary.
 
 ## Testing

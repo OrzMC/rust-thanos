@@ -11,11 +11,11 @@ rust-thanos 是 [OrzMCBackup](https://github.com/OrzMC/OrzMCBackup)（Java/Kotli
 
 ## 🌟 特性
 
-- **智能区块检测**：`InhabitedTime`（严格大于阈值）与强加载区块列表（`chunk_tickets.dat` / `chunks.dat`）双通道判定，未知压缩格式默认安全保留
+- **智能区块检测**：`InhabitedTime`（严格大于阈值）、强加载区块列表与 `--keep-range` 多通道取并集判定，未知压缩格式默认安全保留
 - **多种压缩格式支持**：兼容 RAW、ZLIB、GZIP、LZ4 Block（含校验）
 - **数据安全**：损坏/无法解析的区块**安全保留**而非删除；损坏区块记录到报告；原地模式跳过打开失败/过小的输入文件，绝不丢数据；解压有 64MB 上限防解压炸弹
 - **输出即可用世界**：自动复制 `level.dat`、`players/`、`data/`、`.bak` 等非 MCA 文件，输出目录可直接当世界用
-- **merge 合并恢复**：把优化后的世界（patch）按区块槽级合并回完整备份（base），合并结果 = 备份的全量 + 优化后仍存活的最新区块，entities/poi 与区块锁步，损坏 patch 逐字节回退 base
+- **merge 合并恢复**：把优化后的世界（patch）按区块槽级合并回完整备份（base），合并结果 = 备份的全量 + 优化后仍存活的最新区块，entities/poi 与区块锁步，无法打开的 patch region 逐字节回退 base
 - **并行处理**：region 级并行（`--parallelism`，默认按 CPU 核数），任意并行度下输出逐字节一致
 - **脚本友好**：JSON/CSV/Text 报告、`--strict` 退出码、`--dry-run` 零写入演练、Region/Global 进度显示
 - **灵活配置**：可自定义 `InhabitedTime` 阈值、`--keep-range` 保留矩形、`--no-fsync` 加速落盘
@@ -87,9 +87,9 @@ rust-thanos backup WORLD_DIR [OUTPUT_DIR] \
 | 参数 | 描述 |
 |------|------|
 | `WORLD_DIR` | Minecraft 世界根目录（必填） |
-| `OUTPUT_DIR` | 输出目录，必须为空；已存在且非空时提示是否覆盖，`-f` 跳过提示；未提供则用临时目录并最终替换输入目录 |
+| `OUTPUT_DIR` | 输出目录，必须为空；已存在且非空时提示是否覆盖，`-f` 跳过提示；省略时必须配合 `--in-place`（临时目录后回写输入目录）或 `--dry-run`（临时目录、丢弃不写），否则报错 |
 | `-t, --inhabited-time-seconds` | `InhabitedTime` 阈值（秒，1s=20 ticks），**严格大于**该值才保留，默认 `300` |
-| `--remove-unknown` | 把未知/外部压缩区块视为可删除，默认关闭（安全保留） |
+| `--remove-unknown` | 删除外部压缩、空数据或缺失 InhabitedTime 标签的区块，默认关闭（安全保留）；真正未知的压缩格式仍安全保留 |
 | `--progress-mode` | 进度显示：`off` / `global` / `region`，默认 `region` |
 | `--in-place` | 原地处理：忽略 `OUTPUT_DIR`，直接替换原世界目录 |
 | `--zip-output` | 非原地模式下把输出压缩为 `YYYYMMddHHmmss.zip` 并删除输出目录 |
@@ -139,7 +139,7 @@ rust-thanos backup /path/to/world /path/to/output -f --parallelism 8
 - 每个区块槽：**patch 有该槽 → 用 patch（它是最新状态）**；否则 **base 有该槽 → 用 base**；否则空槽。
 - 每槽的区块决定同样驱动 `entities/` 与 `poi/` 的对应槽（锁步）。
 - base 独有的 region 原样保留；patch 独有的 region 连同样的兄弟 entities/poi 一起拷入。
-- 损坏的 patch region → 整个 region **逐字节回退 base**，绝不丢数据。
+- 无法打开的 patch region（缺失 / 过小 / 损坏头）→ 整个 region 连 entities/poi **逐字节回退 base**；已打开但读取中途出错则记录错误（`ErrorKind::Mca`）。
 - 输出 = base 的全量 + patch 中仍存活的最新区块，即「优化备份 → 恢复完整世界」。
 
 #### 基本语法
@@ -160,11 +160,12 @@ rust-thanos merge BASE_DIR PATCH_DIR OUTPUT_DIR \
 | `OUTPUT_DIR` | 合并结果写入目录；BASE/PATCH/OUTPUT 三者必须互不重叠 |
 | `-f, --force` | 输出目录已存在且非空时强制覆盖 |
 | `--progress-mode` | 进度显示：`off` / `global` / `region`，默认 `off` |
-| `--parallelism` | region 并行度，`0` = 自动，默认 `0`；任意值输出逐字节一致 |
+| `--parallelism` | region 并行度，默认 `0`；`0`/`1` 串行，`> 1` 才并行（与 backup 不同，不自动按核数）；任意值输出逐字节一致 |
 | `--no-fsync` | 跳过 region 落盘 `fsync` |
+| `--progress-interval <n>` | 每处理 `n` 个文件输出一次进度（merge 按文件节流），默认 `1000` |
 | `--report` / `--report-file` / `--report-format` | 同 backup：报告显示 / 写文件 / 格式 |
 
-报告统计：`mergedRegions`（合并的 region 数）、`patchSlots`（来自 patch 的槽数）、`baseSlots`（来自 base 的槽数）、`linkedEntities` / `linkedPoi`（锁步的 entities/poi 槽数）、`copiedFiles`（patch 独有复制文件数）、`overlayFiles`（覆盖的非 MCA 文件数）、`errors`。有错误时退出码为 `1`。
+报告统计：`mergedRegions`（合并的 region 数）、`patchSlots`（来自 patch 的槽数）、`baseSlots`（来自 base 的槽数）、`linkedEntities` / `linkedPoi`（锁步的 entities/poi 槽数）、`copiedFiles`（patch 独有复制文件数）、`overlayFiles`（覆盖的非 MCA 文件数）、`errors`。有错误时退出码为 `1`。（JSON 报告键为 camelCase，如 `mergedRegions`；Rust 库字段为 snake_case，如 `report.merged_regions`。）
 
 #### 示例
 
@@ -193,7 +194,7 @@ rust-thanos merge /path/to/world /path/to/backup /path/to/restored --report
 
 ## 📚 作为库使用
 
-rust-thanos 同时是一个 Rust 库，公开 `world` 模块。优化与合并都通过「配置模型 + 引擎」调用，可用 hooks 接入错误/报告/指标。
+rust-thanos 同时是一个 Rust 库，公开 `world` 模块。优化与合并都通过「配置模型 + 引擎」调用，可用 hooks 接入错误/报告/指标。注意：`--strict` 是 CLI 行为（影响退出码），库引擎不读取该字段。
 
 ### 优化
 
@@ -216,7 +217,6 @@ impl MetricsSink for Counter {
 let request = OptimizerRequestBuilder::new("/path/to/world".into())
     .output(Some("/path/to/out".into()))
     .inhabited_threshold_seconds(600)          // 秒级阈值，内部 ×20 转 tick
-    .strict(true)                              // 有错误即返回
     .progress_mode(ProgressMode::Region)
     // hooks：错误回调 / 报告写出 / 指标
     .on_error(Arc::new(|e: &OptimizeError| {
@@ -278,7 +278,7 @@ println!(
 
 **优化（backup）**
 1. **世界扫描**：递归识别所有维度目录（含 region 子目录即维度）。
-2. **强加载解析**：探测 `data/minecraft/chunk_tickets.dat`（1.21.6+/26.1+）→ `data/chunks.dat`（旧版），解析强加载区块并集。
+2. **强加载解析**：探测 `data/minecraft/chunk_tickets.dat`（1.21.6+/26.1+）与 `data/chunks.dat`（旧版），**两个文件只取先存在者**，文件内的 Forced / Tickets 两种结构取并集。
 3. **区块分析**：对每个 `.mca` 的区块条目，判定 `InhabitedTime > 阈值` 或位于强加载/keep-range 内；无法解析的区块**安全保留**并记录错误。
 4. **region 级并行**：维度串行、region 并行（每 region 写独立输出，结果与并行度无关、逐字节一致）。
 5. **锁步三文件**：保留的区块槽同步写入 `region/`、`entities/`、`poi/` 同名文件；整区全删不生成空文件（惰性写入）。
@@ -288,7 +288,7 @@ println!(
 **合并（merge）**
 1. **OverlapGuard**：BASE/PATCH/OUTPUT 互不重叠，否则直接报 `Input` 错误。
 2. **copyTree**：base 全量复制到输出，跳过 patch 也有的 region/entities/poi `.mca`（稍后 overlay 重写）。
-3. **overlayPatch**：region 级并行合并——每槽 `patch 有 → patch；否则 base 有 → base；否则空`，entities/poi 锁步；损坏 patch region 逐字节回退 base；patch 独有 region 连兄弟 entities/poi 一并拷入；空 entities/poi 结果删除文件。
+3. **overlayPatch**：region 级并行合并——每槽 `patch 有 → patch；否则 base 有 → base；否则空`，entities/poi 锁步；无法打开的 patch region 逐字节回退 base；patch 独有 region 连兄弟 entities/poi 一并拷入；空 entities/poi 结果删除文件。
 
 ## 📊 性能
 
@@ -300,7 +300,7 @@ println!(
 
 1. **先备份**：处理重要世界前建议先做完整备份。
 2. **`--in-place` 风险**：确保有足够磁盘空间（临时目录 + 回写）。
-3. **`--remove-unknown` 慎用**：可能删除无法识别压缩格式的区块。
+3. **`--remove-unknown` 慎用**：会删除外部压缩、空数据或缺失 InhabitedTime 标签的区块（真正未知的压缩格式仍安全保留）。
 4. **merge 三方目录**：BASE/PATCH/OUTPUT 必须是三个互不重叠的目录，程序会校验并在违规时拒绝执行。
 
 ## 🧪 测试
