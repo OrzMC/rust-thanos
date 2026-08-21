@@ -1,8 +1,17 @@
 name: CI
 
 on:
+  # Docs-only changes (markdown / docs/) skip the full build-lint-test matrix.
+  # Workflow files (.github/**), Cargo.toml/lock, .cargo/** and source are NOT
+  # ignored, so any change that can affect the build still runs CI.
   push:
+    paths-ignore:
+      - '*.md'
+      - 'docs/**'
   pull_request:
+    paths-ignore:
+      - '*.md'
+      - 'docs/**'
 
 permissions:
   contents: read
