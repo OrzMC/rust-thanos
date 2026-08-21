@@ -3,6 +3,8 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Rust](https://github.com/OrzMC/rust-thanos/actions/workflows/ci.yml/badge.svg)](https://github.com/OrzMC/rust-thanos/actions/workflows/ci.yml)
 
+> 🌐 宣传网页：[https://orzmc.github.io/rust-thanos/](https://orzmc.github.io/rust-thanos/)
+
 高效的 Minecraft Java 世界优化工具。检测并删除未使用的区块，减少世界文件大小，提高游戏性能；并提供 **merge 合并恢复** 命令，把优化后的世界安全合并回完整备份。
 
 rust-thanos 是 [OrzMCBackup](https://github.com/OrzMC/OrzMCBackup)（Java/Kotlin 版，即 thanos PHP 原版的超集）的 **Rust 版 CLI + 库**，算法与命令行行为对齐 OrzMCBackup。
