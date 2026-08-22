@@ -136,6 +136,46 @@
   td { white-space: nowrap; }
   td:last-child { white-space: normal; }
 
+  /* ---- Benchmark ---- */
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 0.9rem;
+    margin: 0 0 2rem;
+  }
+  @media (min-width: 640px) { .stats { grid-template-columns: repeat(4, 1fr); } }
+  .stat {
+    background: var(--bg-soft);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 0.9rem 1rem;
+  }
+  .stat .num {
+    font-family: var(--mono);
+    font-size: 1.45rem;
+    font-weight: 600;
+    line-height: 1.2;
+    color: var(--text);
+    letter-spacing: -0.01em;
+  }
+  .stat .lbl { font-size: 0.8rem; color: var(--text-muted); margin-top: 0.25rem; }
+  .note { color: var(--text-muted); font-size: 0.85rem; margin: 1.6rem 0 0; }
+  .chart-wrap { overflow-x: auto; margin: 0.6rem 0 1.2rem; }
+  .chart-title { font-weight: 600; font-size: 0.95rem; margin: 1.8rem 0 0.2rem; }
+  svg.bench { display: block; min-width: 560px; width: 100%; }
+  svg.bench .grid { stroke: var(--border); stroke-dasharray: 3 3; }
+  svg.bench .axis { stroke: var(--text-muted); }
+  svg.bench .bar { fill: var(--accent); }
+  svg.bench .bar.muted { fill: var(--border); }
+  svg.bench .val { fill: var(--text); font-family: var(--mono); font-size: 12px; text-anchor: middle; }
+  svg.bench .xlbl { fill: var(--text-muted); font-family: var(--mono); font-size: 11px; text-anchor: middle; }
+  svg.bench .ylbl { fill: var(--text-muted); font-family: var(--mono); font-size: 11px; }
+  svg.bench .refline { stroke: var(--text-muted); stroke-dasharray: 4 4; }
+  svg.bench .ref { fill: var(--text-muted); font-family: var(--mono); font-size: 11px; }
+  .ok { color: var(--accent); font-weight: 600; }
+  .bench-list { margin: 0; padding-left: 1.2rem; }
+  .bench-list li { margin: 0.35rem 0; }
+
   /* ---- Footer ---- */
   footer {
     border-top: 1px solid var(--border);
@@ -162,6 +202,7 @@
     <div class="cta">
       <a class="primary" href="https://github.com/OrzMC/rust-thanos">在 GitHub 上查看</a>
       <a class="secondary" href="https://github.com/OrzMC/rust-thanos/releases">下载 Release</a>
+      <a class="secondary" href="#benchmark">真实数据基准</a>
       <a class="secondary" href="#install">快速开始</a>
     </div>
   </header>
@@ -200,6 +241,77 @@
 <span class="p">$</span> rust-thanos merge /path/to/world /path/to/backup /path/to/restored</pre>
   </section>
 
+  <section id="benchmark">
+    <h2>真实数据基准</h2>
+    <p style="margin:0 0 1.4rem">在 17.4 GiB、3,162,906 区块的真实 Minecraft 服务器世界上实测（WSL 2 / 12 逻辑核）。<code>backup</code> 以不同 <code>InhabitedTime</code> 阈值裁剪，<code>merge</code> 将优化世界合并回完整备份验证往返恢复。完整报告见 <a href="benchmark.md">docs/benchmark.md</a>。</p>
+
+    <div class="stats">
+      <div class="stat"><div class="num">88.3%</div><div class="lbl">体积缩减（-t 300）</div></div>
+      <div class="stat"><div class="num">33,204</div><div class="lbl">峰值处理吞吐 chunks/s</div></div>
+      <div class="stat"><div class="num">~24 MiB</div><div class="lbl">常驻内存 RSS（处理 17.4 GiB）</div></div>
+      <div class="stat"><div class="num">0</div><div class="lbl">六档运行错误总数</div></div>
+    </div>
+
+    <p class="chart-title">输出体积随阈值变化（GiB）</p>
+    <div class="chart-wrap">
+      <svg class="bench" viewBox="0 0 600 240" role="img" aria-label="输出体积随阈值变化柱状图">
+        <!-- gridlines: 0 / 2 / 4 / 6 GiB -->
+        <line class="grid" x1="40" y1="200" x2="580" y2="200"/>
+        <line class="grid" x1="40" y1="148.6" x2="580" y2="148.6"/>
+        <line class="grid" x1="40" y1="97.1" x2="580" y2="97.1"/>
+        <line class="grid" x1="40" y1="45.7" x2="580" y2="45.7"/>
+        <text class="ylbl" x="32" y="203">0</text>
+        <text class="ylbl" x="32" y="151.6">2</text>
+        <text class="ylbl" x="32" y="100.1">4</text>
+        <text class="ylbl" x="32" y="48.7">6</text>
+        <!-- bars: t0 6.38 t60 2.41 t120 2.18 t180 2.10 t240 2.05 t300 2.03 -->
+        <rect class="bar" x="40" y="36.0" width="72" height="164.0"/>
+        <text class="val" x="76" y="29">6.38</text>
+        <text class="xlbl" x="76" y="216">-t 0</text>
+        <rect class="bar" x="124" y="138.0" width="72" height="62.0"/>
+        <text class="val" x="160" y="131">2.41</text>
+        <text class="xlbl" x="160" y="216">-t 60</text>
+        <rect class="bar" x="208" y="143.9" width="72" height="56.1"/>
+        <text class="val" x="244" y="137">2.18</text>
+        <text class="xlbl" x="244" y="216">-t 120</text>
+        <rect class="bar" x="292" y="146.0" width="72" height="54.0"/>
+        <text class="val" x="328" y="139">2.10</text>
+        <text class="xlbl" x="328" y="216">-t 180</text>
+        <rect class="bar" x="376" y="147.3" width="72" height="52.7"/>
+        <text class="val" x="412" y="140">2.05</text>
+        <text class="xlbl" x="412" y="216">-t 240</text>
+        <rect class="bar" x="460" y="147.8" width="72" height="52.2"/>
+        <text class="val" x="496" y="141">2.03</text>
+        <text class="xlbl" x="496" y="216">-t 300</text>
+      </svg>
+    </div>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>阈值</th><th>保留区块</th><th>移除区块</th><th>输出体积</th><th>缩减率</th><th>墙钟</th><th>吞吐</th><th>错误</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>-t 0</code></td><td>908,260</td><td>2,254,646</td><td>6.38 GiB</td><td>63.2%</td><td>2:24</td><td>22,018/s</td><td><span class="ok">0</span></td></tr>
+          <tr><td><code>-t 60</code></td><td>276,381</td><td>2,886,525</td><td>2.41 GiB</td><td>86.1%</td><td>1:43</td><td>30,819/s</td><td><span class="ok">0</span></td></tr>
+          <tr><td><code>-t 120</code></td><td>250,054</td><td>2,912,852</td><td>2.18 GiB</td><td>87.4%</td><td>1:42</td><td>30,941/s</td><td><span class="ok">0</span></td></tr>
+          <tr><td><code>-t 180</code></td><td>240,290</td><td>2,922,616</td><td>2.10 GiB</td><td>87.9%</td><td>1:35</td><td>33,204/s</td><td><span class="ok">0</span></td></tr>
+          <tr><td><code>-t 240</code></td><td>235,262</td><td>2,927,644</td><td>2.05 GiB</td><td>88.2%</td><td>1:49</td><td>28,927/s</td><td><span class="ok">0</span></td></tr>
+          <tr><td><code>-t 300</code></td><td>232,067</td><td>2,930,839</td><td>2.03 GiB</td><td>88.3%</td><td>1:46</td><td>29,853/s</td><td><span class="ok">0</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p class="chart-title">正确性验证（全部通过）</p>
+    <ul class="bench-list">
+      <li><span class="ok">✓</span> 六档输出均为输入世界的严格子集，0 越界文件</li>
+      <li><span class="ok">✓</span> <code>merge</code> 往返：region 数据 10,713/10,713 完整保留，0 错误</li>
+      <li><span class="ok">✓</span> <code>--dry-run</code> 计数与真实运行一致，零写入</li>
+      <li><span class="ok">✓</span> 保留区块随阈值严格单调（908,260 → 232,067），重复运行逐字节一致</li>
+    </ul>
+    <p class="note">环境：Intel Core i7-9750H 6C/12T · 15 GiB 内存 · WSL 2（Ubuntu 26.04，ext4）· rust-thanos v0.0.3 release。数据为真实服务器世界 <code>world/</code>（21,688 个 MCA）与其官方优化备份 <code>world_backup/</code>（3,415 个 MCA，真值基准）。</p>
+  </section>
+
   <section id="platforms">
     <h2>平台支持</h2>
     <div class="table-wrap">
@@ -219,7 +331,7 @@
 
 <footer>
   <span>MIT License</span>
-  <span><a href="https://github.com/OrzMC/rust-thanos">rust-thanos</a> · <a href="https://github.com/OrzMC/rust-thanos/blob/main/README.md">README</a></span>
+  <span><a href="https://github.com/OrzMC/rust-thanos">rust-thanos</a> · <a href="https://github.com/OrzMC/rust-thanos/blob/main/README.md">README</a> · <a href="benchmark.md">验收报告</a></span>
 </footer>
 </body>
 </html>
