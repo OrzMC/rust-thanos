@@ -61,13 +61,27 @@ impl RandomAccess for Box<dyn RandomAccess> {
 
 /// [`RandomAccess`] backed by a real file. Mirrors OrzMCBackup's `RafAccess`
 /// (the newtype avoids trait-method ambiguity with `std::io::Seek`/`Write`).
+///
+/// The underlying [`File`] is shared through `Arc<Mutex<File>>`, so `try_clone`
+/// — which the reader calls once per chunk entry — costs an `Arc` bump instead
+/// of a new file descriptor. Without this, a large world opened one fd per
+/// chunk and exhausted the process ulimit, silently dropping regions.
+///
+/// The read/write position is tracked per-clone, exactly like [`MemoryAccess`],
+/// so every clone has an independent cursor over one shared file. Each
+/// `read_exact`/`write_all` seeks to its own position and performs the I/O
+/// under the mutex in a single step, so interleaved access stays correct.
 pub struct FileAccess {
-    file: File,
+    file: Arc<Mutex<File>>,
+    pos: u64,
 }
 
 impl FileAccess {
     pub fn new(file: File) -> Self {
-        Self { file }
+        Self {
+            file: Arc::new(Mutex::new(file)),
+            pos: 0,
+        }
     }
 
     /// Open read-only (for the reader).
@@ -89,23 +103,34 @@ impl FileAccess {
 
 impl RandomAccess for FileAccess {
     fn seek(&mut self, pos: u64) -> io::Result<()> {
-        self.file.seek(SeekFrom::Start(pos))?;
+        self.pos = pos;
         Ok(())
     }
     fn read_exact(&mut self, buf: &mut [u8]) -> io::Result<()> {
-        self.file.read_exact(buf)
+        let mut f = self.file.lock().unwrap();
+        f.seek(SeekFrom::Start(self.pos))?;
+        f.read_exact(buf)?;
+        self.pos += buf.len() as u64;
+        Ok(())
     }
     fn write_all(&mut self, buf: &[u8]) -> io::Result<()> {
-        self.file.write_all(buf)
+        let mut f = self.file.lock().unwrap();
+        f.seek(SeekFrom::Start(self.pos))?;
+        f.write_all(buf)?;
+        self.pos += buf.len() as u64;
+        Ok(())
     }
     fn try_clone(&self) -> io::Result<Box<dyn RandomAccess>> {
-        Ok(Box::new(FileAccess::new(self.file.try_clone()?)))
+        Ok(Box::new(FileAccess {
+            file: self.file.clone(),
+            pos: 0,
+        }))
     }
     fn len(&self) -> io::Result<u64> {
-        Ok(self.file.metadata()?.len())
+        Ok(self.file.lock().unwrap().metadata()?.len())
     }
     fn sync(&mut self) -> io::Result<()> {
-        self.file.sync_all()
+        self.file.lock().unwrap().sync_all()
     }
 }
 

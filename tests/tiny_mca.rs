@@ -20,4 +20,8 @@ fn tiny_mca_is_skipped_without_error() {
     .unwrap();
     // Should complete and create output structure
     assert!(out.join("region").exists());
+    // The unparseable region is recorded as skipped but byte-preserved in the
+    // output (non-in-place runs never silently drop a region they can't parse).
+    let preserved = fs::read(out.join("region").join("r.0.0.mca")).unwrap();
+    assert_eq!(preserved, vec![0u8; 100], "tiny region preserved as-is");
 }

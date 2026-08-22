@@ -96,6 +96,42 @@ fn memory_fs_end_to_end_keeps_everything() {
 }
 
 #[test]
+fn memory_fs_preserves_unparseable_region() {
+    // A corrupt (<8192 B) region can't be parsed, but non-in-place output must
+    // byte-preserve it instead of silently dropping it (Fix B).
+    let bytes = std::fs::read(FIXTURE_REGION).expect("fixture region readable");
+    let mem = Arc::new(MemoryFS::new());
+    mem.write(Path::new("/world/region/r.0.0.mca"), &bytes)
+        .expect("seed valid region");
+    mem.write(Path::new("/world/region/r.1.0.mca"), &[0u8; 100])
+        .expect("seed tiny corrupt region");
+    let request = OptimizerRequestBuilder::new(PathBuf::from("/world"))
+        .output(Some(PathBuf::from("/out")))
+        .inhabited_threshold_ticks(Some(0))
+        .progress_mode(ProgressMode::Off)
+        .fs(mem.clone())
+        .io_factory(Arc::new(MemoryMcaIOFactory))
+        .build();
+    let report = DefaultOptimizer
+        .run(&request)
+        .expect("optimize on memory FS");
+
+    // The valid region is fully scanned; the corrupt one is preserved
+    // byte-for-byte and its failure is recorded, not silent.
+    assert_eq!(report.processed_chunks, TOTAL_CHUNKS);
+    let corrupt = mem
+        .read(Path::new("/out/region/r.1.0.mca"))
+        .expect("preserved region present")
+        .expect("preserved region bytes");
+    assert_eq!(corrupt, vec![0u8; 100], "corrupt region preserved as-is");
+    assert!(
+        report.errors.iter().any(|e| e.path.ends_with("r.1.0.mca")),
+        "corrupt region failure recorded, got {:?}",
+        report.errors
+    );
+}
+
+#[test]
 fn memory_fs_request_construction_is_public_api() {
     // The request/builder/engine types are library API usable by external
     // callers — this test exercises construction AND the seconds→ticks path.

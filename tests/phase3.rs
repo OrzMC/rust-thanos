@@ -157,9 +157,20 @@ fn corrupt_region_records_error_kind_mca() {
         "corrupt region must be recorded with kind Mca, got {:?}",
         kinds
     );
-    // Non-strict run completes and still writes the valid sibling region.
+    // Non-strict run completes and still writes the valid sibling region, and
+    // the corrupt region is byte-preserved in the output rather than dropped.
     assert!(out.join("region").join("r.-1.0.mca").exists());
-    assert!(!out.join("region").join("r.0.0.mca").exists());
+    let preserved = fs::read(out.join("region").join("r.0.0.mca")).unwrap();
+    assert_eq!(preserved, vec![0u8; 100], "corrupt region preserved as-is");
+    // Its entities/poi counterparts are preserved too.
+    assert!(
+        out.join("entities").join("r.0.0.mca").exists(),
+        "corrupt region's entities preserved"
+    );
+    assert!(
+        out.join("poi").join("r.0.0.mca").exists(),
+        "corrupt region's poi preserved"
+    );
 }
 
 #[test]

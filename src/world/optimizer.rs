@@ -550,6 +550,47 @@ impl Shared {
         s.insert(pfile.to_path_buf());
     }
 
+    /// Byte-copy `src` to `dst` when `src` exists, so a file that could not be
+    /// processed still reaches the output as-is. Dry-run writes nothing. This is
+    /// what makes non-in-place output a *usable world* even when a region (or
+    /// its entities/poi counterpart) turns out to be unreadable: the original
+    /// bytes are preserved instead of silently dropped.
+    fn preserve_unprocessable(&self, src: &Path, dst: &Path) {
+        if self.dry_run || !self.fs.is_regular_file(src) {
+            return;
+        }
+        if let Err(e) = self.fs.copy(src, dst, true) {
+            self.record(
+                src,
+                ErrorKind::Copy,
+                &format!(
+                    "Failed to preserve unprocessed file {} in output: {}",
+                    src.display(),
+                    e
+                ),
+            );
+        }
+    }
+
+    /// Handle a region that could not be parsed or opened. Preserves the
+    /// original region/entities/poi bytes in the output (mirroring in-place
+    /// mode's "skipped = kept as-is" guarantee) and marks them skipped so
+    /// in-place mode never deletes the originals.
+    fn skip_region_preserving(
+        &self,
+        rf: &Path,
+        efile: &Path,
+        pfile: &Path,
+        out_region: &Path,
+        out_entities: &Path,
+        out_poi: &Path,
+    ) {
+        self.preserve_unprocessable(rf, out_region);
+        self.preserve_unprocessable(efile, out_entities);
+        self.preserve_unprocessable(pfile, out_poi);
+        self.mark_skipped(rf, efile, pfile);
+    }
+
     fn emit_region_end(&self, rf: &Path, kept: u64, removed: u64) {
         self.progress.emit(
             ProgressStage::RegionEnd,
@@ -775,7 +816,7 @@ fn process_region(ctx: &DimCtx, rf: &Path) {
                 fs.size(rf)
             ),
         );
-        shared.mark_skipped(rf, &efile, &pfile);
+        shared.skip_region_preserving(rf, &efile, &pfile, &out_region, &out_entities, &out_poi);
         shared.emit_region_end(rf, 0, 0);
         return;
     }
@@ -806,9 +847,16 @@ fn process_region(ctx: &DimCtx, rf: &Path) {
                     ErrorKind::Entities,
                     &format!("Failed to read entities MCA: {}", e),
                 );
+                // A valid-sized but unreadable entities file is preserved
+                // byte-for-byte instead of being silently dropped.
+                shared.preserve_unprocessable(&efile, &out_entities);
                 None
             }
         };
+    } else if fs.is_regular_file(&efile) {
+        // A present-but-invalid entities counterpart (<8192 B) can't be parsed;
+        // keep the original bytes so the output world loses no data.
+        shared.preserve_unprocessable(&efile, &out_entities);
     }
     let mut pr: Option<Box<dyn McaReaderLike>> = None;
     if is_valid_mca(fs.as_ref(), &pfile) {
@@ -820,9 +868,13 @@ fn process_region(ctx: &DimCtx, rf: &Path) {
                     ErrorKind::Poi,
                     &format!("Failed to read POI MCA: {}", e),
                 );
+                // Same preservation policy as entities.
+                shared.preserve_unprocessable(&pfile, &out_poi);
                 None
             }
         };
+    } else if fs.is_regular_file(&pfile) {
+        shared.preserve_unprocessable(&pfile, &out_poi);
     }
 
     // Writers are created up front but lazily open their file on first write,
