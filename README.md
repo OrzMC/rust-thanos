@@ -1,3 +1,11 @@
+> ⚠️ **本仓库已归档（2026-11-14）**
+>
+> 代码已并入 **[OrzMC/OrzMCBackup](https://github.com/OrzMC/OrzMCBackup)** 的 `rust/` 目录：
+> 该仓库现在是「`spec/`（语言无关规范 + 一致性向量）+ `java/` + `rust/` + `upstream/thanos`」的单仓，
+> 两个实现由 `scripts/conformance.sh` 对齐。
+>
+> 本仓库仅保留历史（不导入到新仓）。新开发、issue 与 PR 请到 OrzMCBackup。
+
 # rust-thanos
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
